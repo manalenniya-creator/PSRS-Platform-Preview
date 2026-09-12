@@ -1,0 +1,1600 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PSRS — Démo (autonome, sans backend)</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body style="margin:0;">
+<div id="root"></div>
+<script type="text/babel" data-presets="react" data-type="module">
+const { useState, useEffect, useCallback, useRef } = React;
+
+
+/* ════════════════════════════════════════════════════════════════════════
+   PSRS — Plateforme de Supervision Réseau & Sécurité
+   DÉMO FRONT-END AUTONOME — aucune API, aucun serveur : tout est simulé
+   côté client (données générées + petite logique heuristique) afin de
+   pouvoir naviguer et tester l'interface sans backend/MongoDB/OPNsense.
+   ════════════════════════════════════════════════════════════════════════ */
+
+const severityColor = (s) =>
+  ({ Critique: "#dc2626", "Élevée": "#ea580c", Moyenne: "#ca8a04", Faible: "#16a34a" }[s] ?? "#6b7290");
+
+const timeAgo = (date) => {
+  const s = Math.floor((Date.now() - new Date(date)) / 1000);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  return `${Math.floor(s / 3600)}h`;
+};
+
+/* ─── SVG Icons ──────────────────────────────────────────────────────────── */
+const Icon = ({ d, size = 16, stroke = "currentColor", fill = "none", strokeWidth = 1.8 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke={stroke} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+    <path d={d} />
+  </svg>
+);
+
+/* Logo mark PSRS — mascotte bouclier, yeux ronds et sourire aux dents acérées. */
+const PSRSMark = ({ size = 18, tone = "#fff", pupil = "#0a0a0b" }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+    <path d="M12 2.2l7.6 2.8v6.1c0 5.4-3.2 9.1-7.6 10.7-4.4-1.6-7.6-5.3-7.6-10.7V5l7.6-2.8z"
+      fill={tone} fillOpacity=".15" stroke={tone} strokeWidth="1.3" strokeLinejoin="round" />
+    <circle cx="9" cy="10.1" r="2.05" fill="#fff" />
+    <circle cx="15" cy="10.1" r="2.05" fill="#fff" />
+    <circle cx="9.55" cy="10.5" r="0.85" fill={pupil} />
+    <circle cx="15.55" cy="10.5" r="0.85" fill={pupil} />
+    <path d="M8 14.6 Q12 13.1 16 14.6 L15.35 17.1 L13.6 15.1 L12 17.1 L10.4 15.1 L8.65 17.1 Z" fill="#fff" />
+  </svg>
+);
+
+/* ─── Classification intelligente du trafic ─── */
+const TRAFFIC_COLORS = {
+  web: "#e01e26", dns: "#22c55e", mail: "#eab308", remote: "#f59e0b",
+  database: "#a855f7", files: "#38bdf8", windows: "#94a3b8", directory: "#94a3b8",
+  voip: "#22d3ee", p2p: "#f97316", diagnostic: "#9a9aa3", suspicious: "#ef4444", other: "#6b7280",
+};
+
+const TRAFFIC_LABELS = {
+  web: "Web (HTTP/HTTPS)", dns: "DNS", mail: "Messagerie", remote: "Accès distant",
+  database: "Base de données", files: "Transfert de fichiers", windows: "Partage Windows",
+  directory: "Annuaire (LDAP)", voip: "Voix sur IP", p2p: "Pair-à-pair", diagnostic: "Diagnostic réseau (ICMP)",
+  suspicious: "Trafic suspect", other: "Autre / non classé",
+};
+
+const TrafficBadge = ({ log }) => {
+  const category = log.trafficCategory || "other";
+  const label    = log.trafficLabel   || "Autre / non classé";
+  const color    = TRAFFIC_COLORS[category] || TRAFFIC_COLORS.other;
+  return (
+    <span
+      title={`Confiance IA : ${log.trafficConfidence || "Faible"}`}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 5,
+        padding: "2px 8px", borderRadius: 5, fontSize: 10.5, fontWeight: 600,
+        background: `${color}22`, color,
+        fontFamily: "'Inter',sans-serif", whiteSpace: "nowrap",
+      }}
+    >
+      <span style={{ width: 5, height: 5, borderRadius: "50%", background: color, flexShrink: 0 }} />
+      {label}
+    </span>
+  );
+};
+
+const Icons = {
+  shield:     "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
+  dashboard:  "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z",
+  alert:      "M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0zM12 9v4M12 17h.01",
+  logs:       "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8",
+  firewall:   "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10zM9 12l2 2 4-4",
+  stats:      "M18 20V10M12 20V4M6 20v-6",
+  suricata:   "M13 2L3 14h7v8l10-12h-7V2z",
+  download:   "M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3",
+  sparkle:    "M12 3l1.9 4.9L19 9.8l-5.1 1.9L12 16.6l-1.9-4.9L5 9.8l5.1-1.9L12 3z",
+  logout:     "M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9",
+  refresh:    "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15",
+  check:      "M20 6L9 17l-5-5",
+  ban:        "M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636",
+  lock:       "M19 11H5a2 2 0 00-2 2v7a2 2 0 002 2h14a2 2 0 002-2v-7a2 2 0 00-2-2zM7 11V7a5 5 0 0110 0v4",
+  unlock:     "M19 11H5a2 2 0 00-2 2v7a2 2 0 002 2h14a2 2 0 002-2v-7a2 2 0 00-2-2zM7 11V7a5 5 0 019.9-1",
+  eye:        "M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8zM12 9a3 3 0 100 6 3 3 0 000-6z",
+  server:     "M2 2h20v8H2zM2 14h20v8H2zM6 6h.01M6 18h.01",
+  activity:   "M22 12h-4l-3 9L9 3l-3 9H2",
+  users:      "M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75",
+  trash:      "M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z",
+  plus:       "M12 5v14M5 12h14",
+  x:          "M18 6L6 18M6 6l12 12",
+  info:       "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10zM12 8v5M12 16h.01",
+};
+
+/* ─── CSS ─────────────────────────────────────────────────────────────────── */
+const CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0a0a0b;
+    --surface:   #131315;
+    --surface2:  #1c1c1f;
+    --border:    #2b2b2f;
+    --text:      #f5f5f7;
+    --muted:     #9a9aa3;
+    --accent:    #e01e26;
+    --accent-l:  rgba(224,30,38,.14);
+    --danger:    #ef4444;
+    --danger-l:  rgba(239,68,68,.14);
+    --warn:      #f59e0b;
+    --warn-l:    rgba(245,158,11,.14);
+    --mid:       #eab308;
+    --mid-l:     rgba(234,179,8,.14);
+    --ok:        #22c55e;
+    --ok-l:      rgba(34,197,94,.14);
+    --radius:    10px;
+    --shadow:    0 1px 2px rgba(0,0,0,.35), 0 1px 3px rgba(0,0,0,.4);
+    --shadow-md: 0 4px 18px rgba(0,0,0,.45);
+    --shadow-lg: 0 20px 55px rgba(0,0,0,.6);
+    --font-display: 'Space Grotesk', 'Inter', sans-serif;
+    --font-mono:    'JetBrains Mono', monospace;
+  }
+
+  #psrs-root { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; font-size: 14px; -webkit-font-smoothing: antialiased; min-height: 100vh; }
+
+  #psrs-root ::-webkit-scrollbar { width: 6px; height:6px; }
+  #psrs-root ::-webkit-scrollbar-track { background: transparent; }
+  #psrs-root ::-webkit-scrollbar-thumb { background: #333338; border-radius: 99px; }
+  #psrs-root ::-webkit-scrollbar-thumb:hover { background: #46464c; }
+
+  @keyframes popIn    { from { opacity:0; transform:scale(.94) translateY(6px); } to { opacity:1; transform:scale(1) translateY(0); } }
+  @keyframes typingDot{ 0%,60%,100%{ opacity:.25; transform:translateY(0);} 30%{ opacity:1; transform:translateY(-2px);} }
+  @keyframes ringPulse{ 0%{box-shadow:0 0 0 0 rgba(224,30,38,.35);} 70%{box-shadow:0 0 0 12px rgba(224,30,38,0);} 100%{box-shadow:0 0 0 0 rgba(224,30,38,0);} }
+  @keyframes logoPulse{ 0%,100%{ transform:scale(1); box-shadow:0 0 0 0 rgba(255,255,255,.25); } 50%{ transform:scale(1.06); box-shadow:0 0 0 8px rgba(255,255,255,0); } }
+  @keyframes logoPulseLight{ 0%,100%{ transform:scale(1); box-shadow:0 3px 10px rgba(224,30,38,.28); } 50%{ transform:scale(1.08); box-shadow:0 3px 16px rgba(224,30,38,.45); } }
+
+  #psrs-root .card  { transition: transform .18s ease, box-shadow .18s ease; }
+  #psrs-root .card:hover { transform: translateY(-2px); box-shadow: 0 10px 24px rgba(20,23,43,.09); }
+  #psrs-root .btn   { transition: transform .12s ease, background .15s ease, box-shadow .15s ease; }
+  #psrs-root .btn:hover { transform: translateY(-1px); }
+  #psrs-root .btn-primary:hover { box-shadow: 0 6px 16px rgba(224,30,38,.3); }
+  #psrs-root .nav-btn { transition: background .15s ease, color .15s ease, box-shadow .15s ease; }
+
+  @keyframes fadeUp   { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+  @keyframes fadeIn   { from { opacity:0; } to { opacity:1; } }
+  @keyframes slideIn  { from { opacity:0; transform:translateX(-16px); } to { opacity:1; transform:translateX(0); } }
+  @keyframes pulse    { 0%,100%{opacity:1;} 50%{opacity:.3;} }
+  @keyframes spin     { to { transform:rotate(360deg); } }
+  @keyframes scaleIn  { from{opacity:0;transform:scale(.94);} to{opacity:1;transform:scale(1);} }
+  @keyframes countUp  { from{opacity:0;transform:translateY(6px);} to{opacity:1;transform:translateY(0);} }
+  @keyframes barGrow  { from{width:0;} to{width:var(--w);} }
+
+  .fade-up   { animation: fadeUp  .3s ease both; }
+  .fade-in   { animation: fadeIn  .2s ease both; }
+  .scale-in  { animation: scaleIn .3s ease both; }
+
+  .assist-btn{position:fixed;bottom:24px;right:28px;width:56px;height:56px;border-radius:50%;
+    background:linear-gradient(135deg,#e01e26,#7a1216);border:none;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;color:#fff;
+    box-shadow:0 8px 24px rgba(224,30,38,.35);animation:ringPulse 2.6s ease infinite;z-index:50;}
+  .assist-panel{position:fixed;bottom:92px;right:28px;width:340px;max-height:460px;background:var(--surface);
+    border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow-lg);
+    overflow:hidden;display:flex;flex-direction:column;animation:popIn .25s ease both;z-index:50;}
+  .assist-head{background:linear-gradient(135deg,#e01e26,#7a1216);color:#fff;padding:14px 16px;
+    display:flex;align-items:center;gap:10px;}
+  .assist-head-icon{width:30px;height:30px;border-radius:8px;background:rgba(255,255,255,.16);
+    display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .assist-title{font-size:13px;font-weight:700;}
+  .assist-sub{font-size:10.5px;color:rgba(255,255,255,.8);display:flex;align-items:center;gap:5px;}
+  .assist-online{width:6px;height:6px;border-radius:50%;background:#4ade80;}
+  .assist-close{margin-left:auto;background:transparent;border:none;color:#fff;opacity:.8;cursor:pointer;padding:4px;}
+  .assist-close:hover{opacity:1;}
+  .assist-body{flex:1;padding:14px;display:flex;flex-direction:column;gap:10px;overflow-y:auto;background:var(--bg);}
+  .msg{max-width:85%;padding:9px 12px;border-radius:11px;font-size:12px;line-height:1.5;animation:fadeUp .25s ease both;}
+  .msg-bot{background:var(--surface);border:1px solid var(--border);align-self:flex-start;border-bottom-left-radius:3px;}
+  .msg-user{background:var(--accent);color:#fff;align-self:flex-end;border-bottom-right-radius:3px;}
+  .typing{display:flex;gap:3px;align-self:flex-start;padding:9px 12px;background:var(--surface);
+    border:1px solid var(--border);border-radius:11px;border-bottom-left-radius:3px;}
+  .typing span{width:5px;height:5px;border-radius:50%;background:var(--muted);animation:typingDot 1.2s ease infinite;}
+  .typing span:nth-child(2){animation-delay:.15s;}
+  .typing span:nth-child(3){animation-delay:.3s;}
+  .assist-input{display:flex;gap:8px;padding:12px;border-top:1px solid var(--border);background:var(--surface);}
+  .assist-input input{flex:1;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:12px;
+    background:var(--surface2);color:var(--text);font-family:'Inter',sans-serif;}
+  .assist-input input:focus{outline:none;border-color:var(--accent);}
+  .assist-send{width:32px;height:32px;border-radius:8px;background:var(--accent);border:none;color:#fff;
+    display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;}
+  .assist-send:disabled{opacity:.6;cursor:default;}
+  .stagger > *:nth-child(1){animation:fadeUp .3s .04s ease both;}
+  .stagger > *:nth-child(2){animation:fadeUp .3s .08s ease both;}
+  .stagger > *:nth-child(3){animation:fadeUp .3s .12s ease both;}
+  .stagger > *:nth-child(4){animation:fadeUp .3s .16s ease both;}
+  .stagger > *:nth-child(5){animation:fadeUp .3s .20s ease both;}
+  .stagger > *:nth-child(n+6){animation:fadeUp .3s .24s ease both;}
+
+  .app     { display:flex; min-height:100vh; }
+  .sidebar {
+    width:230px; min-height:100vh;
+    background:var(--surface);
+    border-right:1px solid var(--border);
+    display:flex; flex-direction:column;
+    padding:20px 10px;
+    position:sticky; top:0; align-self:flex-start; height:100vh; overflow-y:auto;
+    animation: slideIn .3s ease both;
+  }
+
+  .logo { display:flex; align-items:center; gap:10px; padding:4px 10px 18px; border-bottom:1px solid var(--border); margin-bottom:10px; }
+  .logo-icon {
+    width:34px; height:34px; border-radius:9px; flex-shrink:0;
+    background:var(--accent); display:flex; align-items:center; justify-content:center;
+    color:#fff; animation:logoPulseLight 3s ease-in-out infinite;
+  }
+  .logo-name { font-family:var(--font-display); font-size:16px; font-weight:700; letter-spacing:.3px; }
+  .logo-sub  { font-size:10px; color:var(--muted); font-weight:500; letter-spacing:.4px; text-transform:uppercase; }
+
+  .nav-section { font-size:10px; font-weight:600; color:var(--muted); letter-spacing:.6px; text-transform:uppercase; padding:14px 10px 6px; }
+  .nav-btn {
+    display:flex; align-items:center; gap:9px;
+    width:100%; padding:9px 10px; border:none; border-radius:7px;
+    background:transparent; color:var(--muted);
+    font-size:13px; font-weight:500; cursor:pointer;
+    transition:all .15s ease; text-align:left; position:relative;
+  }
+  .nav-btn:hover  { background:var(--surface2); color:var(--text); }
+  .nav-btn.active { background:var(--accent-l); color:var(--accent); font-weight:600; box-shadow:inset 2px 0 0 var(--accent); }
+  .nav-btn.active svg { stroke:var(--accent); }
+  .nav-badge {
+    margin-left:auto; background:var(--danger); color:#fff;
+    font-size:10px; font-weight:700; min-width:18px; height:18px;
+    border-radius:99px; display:flex; align-items:center; justify-content:center; padding:0 5px;
+  }
+
+  .live-pill {
+    display:flex; align-items:center; gap:6px; margin:10px 10px 0;
+    font-size:11px; color:var(--ok); font-weight:600;
+  }
+  .live-dot { width:6px; height:6px; border-radius:50%; background:var(--ok); box-shadow:0 0 6px var(--ok); animation:pulse 1.8s ease infinite; }
+
+  .logout-btn {
+    margin-top:10px; display:flex; align-items:center; gap:9px;
+    width:100%; padding:9px 10px; border:1px solid var(--border); border-radius:7px;
+    background:transparent; color:var(--muted); font-size:13px; font-weight:500; cursor:pointer;
+    transition:all .15s ease;
+  }
+  .logout-btn:hover { background:var(--danger-l); color:var(--danger); border-color:rgba(255,59,92,.35); }
+
+  .user-box { margin-top:auto; padding:10px; border-top:1px solid var(--border); }
+  .user-name { font-size:12.5px; font-weight:600; font-family:var(--font-mono); }
+  .role-badge { display:inline-flex; align-items:center; padding:2px 8px; border-radius:99px; font-size:10px; font-weight:700; letter-spacing:.3px; text-transform:uppercase; margin-top:4px; }
+  .role-admin    { background:var(--danger-l); color:var(--danger); }
+  .role-operator { background:var(--accent-l); color:var(--accent); }
+  .role-viewer   { background:var(--surface2); color:var(--muted); }
+
+  .user-form { display:flex; gap:8px; padding:14px 18px; border-bottom:1px solid var(--border); flex-wrap:wrap; align-items:flex-end; }
+  .user-form .field { margin-bottom:0; min-width:140px; }
+  .user-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px 18px; border-bottom:1px solid var(--border); animation:fadeUp .3s ease both; }
+  .user-row:last-child { border-bottom:none; }
+  .user-row-info { display:flex; flex-direction:column; gap:3px; }
+  .user-row-name { font-size:13px; font-weight:600; font-family:'JetBrains Mono',monospace; }
+  .user-row-meta { font-size:11px; color:var(--muted); }
+  .role-select { padding:6px 9px; border-radius:6px; border:1px solid var(--border); background:var(--surface2); font-size:12px; font-family:'Inter',sans-serif; color:var(--text); cursor:pointer; }
+
+  .main { flex:1; padding:28px 32px; min-width:0; }
+  .page-header { display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:24px; flex-wrap: wrap; gap: 12px; }
+  .page-title  { font-size:22px; font-weight:700; letter-spacing:-.5px; }
+  .page-sub    { font-size:12px; color:var(--muted); margin-top:3px; }
+
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; margin-bottom:20px; }
+  .card  {
+    background:var(--surface); border:1px solid var(--border);
+    border-radius:var(--radius); padding:18px 20px;
+    box-shadow:var(--shadow); transition:box-shadow .2s, transform .2s;
+  }
+  .card:hover { box-shadow:var(--shadow-md); transform:translateY(-1px); }
+  .card-label { font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+  .card-val   { font-size:32px; font-weight:800; letter-spacing:-1.5px; margin:6px 0 0; animation:countUp .4s ease both; }
+  .card-foot  { font-size:11px; color:var(--muted); margin-top:4px; }
+  .card-line  { height:2px; border-radius:99px; margin-top:14px; }
+
+  .panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); margin-bottom:16px; overflow:hidden; }
+  .panel-header { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--border); flex-wrap: wrap; gap: 8px; }
+  .panel-title  { font-size:13px; font-weight:600; }
+  .panel-body   { padding:18px; }
+
+  .chip { display:inline-flex; align-items:center; gap:5px; padding:3px 9px; border-radius:99px; font-size:11px; font-weight:600; }
+  .chip-ok  { background:var(--ok-l);   color:var(--ok);   border:1px solid #bbf7d0; }
+  .chip-err { background:var(--danger-l); color:var(--danger); border:1px solid rgba(239,68,68,.35); }
+  .chip-warn{ background:var(--warn-l); color:var(--warn); border:1px solid #fed7aa; }
+  .chip-neu { background:var(--surface2); color:var(--muted); border:1px solid var(--border); }
+  .chip-blue{ background:var(--accent-l); color:var(--accent); border:1px solid rgba(224,30,38,.3); }
+
+  .alert-row { display:flex; align-items:center; gap:12px; padding:13px 18px; border-bottom:1px solid var(--border); transition:background .12s; animation:fadeUp .3s ease both; }
+  .alert-row:last-child { border-bottom:none; }
+  .alert-row:hover { background:var(--surface2); }
+  .alert-bar  { width:3px; border-radius:99px; align-self:stretch; flex-shrink:0; }
+  .alert-info { flex:1; min-width:0; }
+  .alert-type { font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .alert-meta { font-size:11px; color:var(--muted); margin-top:2px; font-family:'JetBrains Mono',monospace; }
+  .alert-acts { display:flex; gap:6px; flex-shrink:0; }
+
+  .sig-row { display:flex; align-items:center; gap:12px; padding:12px 18px; border-bottom:1px solid var(--border); transition:background .12s; animation:fadeUp .3s ease both; }
+  .sig-row:last-child { border-bottom:none; }
+  .sig-row:hover { background:var(--surface2); }
+  .sig-id { font-family:var(--font-mono); font-size:10px; color:var(--muted); background:var(--surface2); border:1px solid var(--border); border-radius:5px; padding:2px 6px; flex-shrink:0; white-space:nowrap; }
+  .sig-info { flex:1; min-width:0; }
+  .sig-name { font-size:12.5px; font-weight:600; }
+  .sig-meta { font-size:11px; color:var(--muted); margin-top:2px; font-family:var(--font-mono); }
+  .sig-cat { font-size:10px; font-weight:700; padding:3px 8px; border-radius:99px; text-transform:uppercase; letter-spacing:.3px; flex-shrink:0; white-space:nowrap; }
+  .cat-exploit { background:var(--danger-l); color:var(--danger); }
+  .cat-recon   { background:var(--warn-l);   color:var(--warn); }
+  .cat-policy  { background:var(--accent-l); color:var(--accent); }
+
+  .tbl { width:100%; border-collapse:collapse; font-size:12px; }
+  .tbl th { padding:9px 14px; text-align:left; font-size:10px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; border-bottom:1px solid var(--border); background:var(--surface2); white-space:nowrap; }
+  .tbl td { padding:10px 14px; border-bottom:1px solid var(--border); font-family:'JetBrains Mono',monospace; font-size:11px; }
+  .tbl tr:last-child td { border-bottom:none; }
+  .tbl tr:hover td { background:var(--surface2); }
+
+  .proto { display:inline-flex; padding:2px 7px; border-radius:4px; font-size:10px; font-weight:700; letter-spacing:.3px; }
+  .p-TCP  { background:var(--accent-l); color:#f47174; }
+  .p-UDP  { background:var(--ok-l); color:#4ade80; }
+  .p-ICMP { background:rgba(168,85,247,.14); color:#c084fc; }
+  .p-x    { background:var(--surface2); color:var(--muted); }
+
+  .act-allow { color:var(--ok); font-weight:600; }
+  .act-deny  { color:var(--danger); font-weight:600; }
+
+  .fw-row { display:flex; align-items:center; justify-content:space-between; padding:12px 18px; border-bottom:1px solid var(--border); animation:fadeUp .3s ease both; }
+  .fw-row:last-child { border-bottom:none; }
+  .fw-ip   { font-family:'JetBrains Mono',monospace; font-size:13px; font-weight:500; }
+  .fw-uuid { font-size:10px; color:var(--muted); margin-top:2px; font-family:'JetBrains Mono',monospace; }
+
+  .btn { display:inline-flex; align-items:center; gap:5px; padding:6px 12px; border-radius:6px; border:none; font-size:12px; font-weight:600; cursor:pointer; transition:all .15s ease; white-space:nowrap; font-family:'Inter',sans-serif; }
+  .btn-primary { background:var(--accent); color:#fff; }
+  .btn-primary:hover { background:#e01e26; box-shadow:0 2px 8px rgba(224,30,38,.3); }
+  .btn-danger  { background:var(--danger-l); color:var(--danger); border:1px solid rgba(239,68,68,.35); }
+  .btn-danger:hover  { background:var(--danger); color:#fff; }
+  .btn-excel { background:#107c41; color:#fff; }
+  .btn-excel:hover { box-shadow:0 6px 16px rgba(16,124,65,.3); }
+  .btn-excel:disabled { opacity:.6; cursor:default; transform:none; }
+  .btn-ghost   { background:var(--surface2); color:var(--muted); border:1px solid var(--border); }
+  .btn-ghost:hover   { color:var(--text); background:var(--border); }
+  .btn-sm { padding:4px 9px; font-size:11px; border-radius:5px; }
+  .btn:disabled { opacity:.45; cursor:not-allowed; }
+
+  .login-page { min-height:100vh; background:#0a0a0b; display:flex; align-items:center; justify-content:center; padding: 24px; }
+  .login-wrap { display:flex; flex-direction:column; align-items:center; gap:18px; animation:scaleIn .35s ease both; width: 100%; max-width: 360px; }
+  .login-card { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:28px 36px 36px; width:100%; box-shadow:var(--shadow-lg); }
+
+  .hero{background:linear-gradient(120deg,#0a0a0b 0%,#3a0508 42%,#e01e26 100%);color:#fff;
+    border:1px solid var(--border);
+    padding:32px 40px;display:flex;align-items:center;gap:16px;position:relative;overflow:hidden;box-shadow:var(--shadow-lg);}
+  .hero-glow{position:absolute;width:220px;height:220px;border-radius:50%;
+    background:radial-gradient(circle,rgba(255,255,255,.18),transparent 70%);
+    top:-100px;right:-50px;animation:glowDrift 9s ease-in-out infinite;}
+  @keyframes glowDrift{0%,100%{transform:translate(0,0) scale(1);}50%{transform:translate(-18px,14px) scale(1.12);}}
+  .hero-icon{width:52px;height:52px;border-radius:13px;background:rgba(255,255,255,.14);display:flex;align-items:center;
+    justify-content:center;flex-shrink:0;border:1px solid rgba(255,255,255,.25);animation:logoPulse 3s ease-in-out infinite;}
+  .hero-name{font-family:var(--font-display);font-size:30px;font-weight:700;letter-spacing:1px;}
+  .hero-tag{font-size:14px;color:rgba(255,255,255,.85);margin-top:5px;font-weight:500;letter-spacing:.2px;}
+  .hero-badge{display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:4px 10px;
+    border-radius:99px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.25);
+    font-size:10.5px;font-weight:600;letter-spacing:.2px;color:#fff;}
+  .hero-term{position:relative;z-index:1;font-family:'JetBrains Mono',monospace;font-size:11px;
+    color:#ffb3b6;margin-top:12px;height:14px;overflow:hidden;}
+  .hero-term span{display:inline-block;overflow:hidden;white-space:nowrap;border-right:2px solid #fff;
+    animation:heroTyping 6s steps(24) infinite;}
+  @keyframes heroTyping{
+    0%{width:0;}
+    35%{width:24ch;}
+    50%{width:24ch;}
+    85%{width:0;}
+    100%{width:0;}
+  }
+  .login-icon { width:44px; height:44px; border-radius:11px; background:var(--accent); display:flex; align-items:center; justify-content:center; color:#fff; box-shadow:0 4px 14px rgba(224,30,38,.35); }
+  .login-title{ font-size:18px; font-weight:700; letter-spacing:-.3px; }
+  .login-sub  { font-size:12px; color:var(--muted); }
+  .field      { display:flex; flex-direction:column; gap:5px; margin-bottom:12px; }
+  .field label{ font-size:12px; font-weight:500; }
+  .field input { padding:9px 12px; border-radius:7px; border:1px solid var(--border); background:var(--surface2); font-size:13px; color:var(--text); transition:border .15s, box-shadow .15s; font-family:'Inter',sans-serif; outline:none; }
+  .field input:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(224,30,38,.1); }
+  .login-err  { background:var(--danger-l); border:1px solid rgba(239,68,68,.35); color:var(--danger); border-radius:7px; padding:9px 12px; font-size:12px; margin-bottom:12px; display:flex; align-items:center; gap:7px; }
+  .login-footer { font-size:11px; color:#71717a; text-align:center; margin-top:4px; }
+
+  .demo-box { background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:12px 14px; font-size:11.5px; color:var(--muted); width: 100%; }
+  .demo-box b { color: var(--text); }
+  .demo-cred { display:flex; justify-content:space-between; gap: 8px; font-family:'JetBrains Mono',monospace; margin-top:6px; padding:5px 8px; background:var(--bg); border-radius:6px; cursor:pointer; border:1px solid transparent; }
+  .demo-cred:hover { border-color: var(--accent); color: var(--text); }
+
+  .empty { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:40px 20px; color:var(--muted); gap:8px; }
+  .empty-icon { opacity:.25; }
+  .empty-text { font-size:13px; }
+
+  .spin { animation:spin .7s linear infinite; display:inline-block; }
+
+  .opn-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .opn-item { background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; }
+  .opn-key  { font-size:10px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.4px; }
+  .opn-val  { font-size:12px; font-weight:600; margin-top:3px; font-family:'JetBrains Mono',monospace; }
+
+  .stats-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
+  @media(max-width:900px){ .stats-grid { grid-template-columns:1fr; } }
+
+  .bar-chart { display:flex; flex-direction:column; gap:10px; }
+  .bar-row   { display:flex; flex-direction:column; gap:4px; }
+  .bar-label { display:flex; justify-content:space-between; font-size:12px; }
+  .bar-label span:first-child { font-weight:500; }
+  .bar-label span:last-child  { color:var(--muted); font-family:'JetBrains Mono',monospace; }
+  .bar-track { height:8px; background:var(--surface2); border-radius:99px; overflow:hidden; }
+  .bar-fill  { height:100%; border-radius:99px; animation:barGrow .6s ease both; }
+
+  .donut-wrap { display:flex; align-items:center; gap:20px; flex-wrap: wrap; }
+  .donut-legend { display:flex; flex-direction:column; gap:8px; }
+  .legend-item  { display:flex; align-items:center; gap:8px; font-size:12px; }
+  .legend-dot   { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+  .legend-val   { margin-left:auto; font-weight:600; font-family:'JetBrains Mono',monospace; color:var(--muted); }
+
+  .timeline { display:flex; flex-direction:column; gap:0; }
+  .tl-item  { display:flex; gap:12px; padding:10px 0; border-bottom:1px solid var(--border); animation:fadeUp .3s ease both; }
+  .tl-item:last-child { border-bottom:none; }
+  .tl-dot   { width:8px; height:8px; border-radius:50%; margin-top:4px; flex-shrink:0; }
+  .tl-info  { flex:1; }
+  .tl-type  { font-size:12px; font-weight:600; }
+  .tl-meta  { font-size:11px; color:var(--muted); font-family:'JetBrains Mono',monospace; margin-top:1px; }
+  .tl-time  { font-size:10px; color:var(--muted); white-space:nowrap; }
+
+  .demo-banner { background: linear-gradient(90deg, rgba(224,30,38,.12), rgba(224,30,38,.02)); border-bottom: 1px solid var(--border); padding: 7px 20px; font-size: 11.5px; color: var(--muted); display:flex; align-items:center; gap:8px; }
+  .demo-banner b { color: var(--text); }
+
+  @media(max-width: 760px){
+    .app { flex-direction: column; }
+    .sidebar { width: 100%; height: auto; position: relative; flex-direction: row; flex-wrap: wrap; padding: 14px; }
+    .user-box { margin-top: 10px; width: 100%; }
+    .hero { padding: 22px 20px; }
+    .main { padding: 20px 16px; }
+  }
+`;
+
+/* ─── Donut Chart (SVG) ───────────────────────────────────────────────────── */
+function DonutChart({ data, size = 120 }) {
+  const total = data.reduce((s, d) => s + d.value, 0) || 1;
+  const r = 42, cx = 60, cy = 60, circ = 2 * Math.PI * r;
+  let offset = 0;
+  const slices = data.map((d) => {
+    const pct = d.value / total;
+    const dash = pct * circ;
+    const slice = { ...d, offset, dash };
+    offset += dash;
+    return slice;
+  });
+  return (
+    <div className="donut-wrap">
+      <svg width={size} height={size} viewBox="0 0 120 120">
+        <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--surface2)" strokeWidth="14" />
+        {slices.map((s, i) => (
+          <circle key={i} cx={cx} cy={cy} r={r} fill="none"
+            stroke={s.color} strokeWidth="14"
+            strokeDasharray={`${s.dash} ${circ - s.dash}`}
+            strokeDashoffset={-s.offset}
+            transform="rotate(-90 60 60)"
+            style={{ transition: "stroke-dasharray .6s ease" }}
+          />
+        ))}
+        <text x={cx} y={cy} textAnchor="middle" dominantBaseline="middle"
+          style={{ fontSize: 18, fontWeight: 800, fontFamily: "'Space Grotesk',Inter", fill: "#f5f5f7" }}>
+          {total}
+        </text>
+        <text x={cx} y={cy + 16} textAnchor="middle"
+          style={{ fontSize: 9, fill: "#9a9aa3", fontFamily: "Inter", fontWeight: 600, textTransform: "uppercase", letterSpacing: 1 }}>
+          TOTAL
+        </text>
+      </svg>
+      <div className="donut-legend">
+        {data.map((d, i) => (
+          <div className="legend-item" key={i}>
+            <div className="legend-dot" style={{ background: d.color }} />
+            <span>{d.label}</span>
+            <span className="legend-val">{d.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ─── Bar Chart ───────────────────────────────────────────────────────────── */
+function BarChart({ data, color = "#e01e26" }) {
+  const max = Math.max(...data.map(d => d.value), 1);
+  return (
+    <div className="bar-chart">
+      {data.map((d, i) => (
+        <div className="bar-row" key={i}>
+          <div className="bar-label">
+            <span style={{ fontFamily: "JetBrains Mono", fontSize: 11 }}>{d.label}</span>
+            <span>{d.value}</span>
+          </div>
+          <div className="bar-track">
+            <div className="bar-fill" style={{
+              "--w": `${(d.value / max) * 100}%`,
+              width: `${(d.value / max) * 100}%`,
+              background: color,
+              animationDelay: `${i * 0.07}s`,
+            }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   COUCHE DE SIMULATION — remplace entièrement le backend Node/MongoDB/OPNsense
+   ════════════════════════════════════════════════════════════════════════ */
+
+const ROLE_LABELS = { admin: "Administrateur", operator: "Opérateur", viewer: "Lecteur" };
+const canOperate = (role) => role === "admin" || role === "operator";
+const isAdmin    = (role) => role === "admin";
+
+const DEMO_ACCOUNTS = [
+  { id: "u-admin",    username: "admin",    password: "admin123",    role: "admin",    createdAt: "2026-06-02T09:00:00Z", lastLogin: new Date(Date.now() - 3 * 60000).toISOString() },
+  { id: "u-operator", username: "operateur", password: "operateur123", role: "operator", createdAt: "2026-06-10T09:00:00Z", lastLogin: new Date(Date.now() - 26 * 60000).toISOString() },
+  { id: "u-viewer",   username: "lecteur",  password: "lecteur123",  role: "viewer",   createdAt: "2026-07-01T09:00:00Z", lastLogin: new Date(Date.now() - 90 * 60000).toISOString() },
+];
+
+const NORMAL_SRC   = ["192.168.1.12", "192.168.1.15", "192.168.1.23", "192.168.1.31", "192.168.1.44", "192.168.1.52"];
+const SUSPECT_SRC   = ["45.142.212.61", "185.220.101.7", "91.219.236.18", "103.55.36.9", "194.26.29.14"];
+const DEST_IPS      = ["192.168.1.1", "192.168.1.10", "192.168.1.20", "192.168.1.25", "8.8.8.8", "1.1.1.1"];
+
+const PORT_TABLE = [
+  { port: 80,   proto: "TCP",  category: "web",        label: "Web (HTTP)" },
+  { port: 443,  proto: "TCP",  category: "web",        label: "Web (HTTPS)" },
+  { port: 53,   proto: "UDP",  category: "dns",        label: "Résolution DNS" },
+  { port: 25,   proto: "TCP",  category: "mail",       label: "Messagerie (SMTP)" },
+  { port: 22,   proto: "TCP",  category: "remote",     label: "Accès distant (SSH)" },
+  { port: 3389, proto: "TCP",  category: "remote",     label: "Accès distant (RDP)" },
+  { port: 3306, proto: "TCP",  category: "database",   label: "Base de données (MySQL)" },
+  { port: 445,  proto: "TCP",  category: "windows",    label: "Partage Windows (SMB)" },
+  { port: 389,  proto: "TCP",  category: "directory",  label: "Annuaire (LDAP)" },
+  { port: 5060, proto: "UDP",  category: "voip",       label: "Voix sur IP (SIP)" },
+  { port: 6883, proto: "TCP",  category: "p2p",        label: "Pair-à-pair (BitTorrent)" },
+];
+
+const uid = (() => { let n = 1000; return (p = "id") => `${p}-${(n++).toString(36)}`; })();
+const rInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+const rPick = (arr) => arr[rInt(0, arr.length - 1)];
+
+function makeNormalLog(offsetSec = 0) {
+  const p = rPick(PORT_TABLE);
+  return {
+    _id: uid("log"),
+    protocol: p.proto,
+    sourceIP: rPick(NORMAL_SRC),
+    destinationIP: rPick(DEST_IPS),
+    action: "ALLOW",
+    trafficCategory: p.category,
+    trafficLabel: p.label,
+    trafficConfidence: rPick(["Élevée", "Moyenne"]),
+    createdAt: new Date(Date.now() - offsetSec * 1000).toISOString(),
+  };
+}
+
+function makeDiagnosticLog(ip, offsetSec = 0) {
+  return {
+    _id: uid("log"),
+    protocol: "ICMP",
+    sourceIP: ip,
+    destinationIP: rPick(DEST_IPS),
+    action: "ALLOW",
+    trafficCategory: "diagnostic",
+    trafficLabel: "Diagnostic réseau (ICMP)",
+    trafficConfidence: "Élevée",
+    createdAt: new Date(Date.now() - offsetSec * 1000).toISOString(),
+  };
+}
+
+function makeSuspectLog(ip, offsetSec = 0) {
+  return {
+    _id: uid("log"),
+    protocol: rPick(["TCP", "TCP", "ICMP"]),
+    sourceIP: ip,
+    destinationIP: rPick(DEST_IPS),
+    action: "DENY",
+    trafficCategory: "suspicious",
+    trafficLabel: "Trafic suspect",
+    trafficConfidence: "Élevée",
+    createdAt: new Date(Date.now() - offsetSec * 1000).toISOString(),
+  };
+}
+
+/* Génère l'historique initial (≈ dernières 20 minutes) */
+function genInitialLogs() {
+  const logs = [];
+  for (let i = 0; i < 46; i++) logs.push(makeNormalLog(i * 26 + rInt(0, 10)));
+  for (let i = 0; i < 4; i++)  logs.push(makeDiagnosticLog(rPick(NORMAL_SRC), i * 40 + rInt(0, 20)));
+  for (let i = 0; i < 9; i++)  logs.push(makeSuspectLog(SUSPECT_SRC[0], i * 8 + rInt(0, 5)));
+  return logs.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 60);
+}
+
+const ALERT_RULES = [
+  { type: "Scan de ports (Nmap)",         severity: "Élevée" },
+  { type: "Flood ICMP",                   severity: "Moyenne" },
+  { type: "Flood TCP / Scan agressif",    severity: "Critique" },
+  { type: "Trafic suspect répété",        severity: "Moyenne" },
+];
+
+function genInitialAlerts() {
+  const now = Date.now();
+  return [
+    { _id: uid("al"), alertType: "Flood TCP / Scan agressif", sourceIP: SUSPECT_SRC[0], severity: "Critique", status: "En cours", createdAt: new Date(now - 2 * 60000).toISOString() },
+    { _id: uid("al"), alertType: "Scan de ports (Nmap)",       sourceIP: SUSPECT_SRC[1], severity: "Élevée",   status: "En cours", createdAt: new Date(now - 9 * 60000).toISOString() },
+    { _id: uid("al"), alertType: "Trafic suspect répété",      sourceIP: SUSPECT_SRC[2], severity: "Moyenne",  status: "En cours", createdAt: new Date(now - 14 * 60000).toISOString() },
+    { _id: uid("al"), alertType: "Flood ICMP",                 sourceIP: SUSPECT_SRC[3], severity: "Moyenne",  status: "Résolue",  createdAt: new Date(now - 41 * 60000).toISOString() },
+    { _id: uid("al"), alertType: "Scan de ports (Nmap)",       sourceIP: "45.142.212.90", severity: "Élevée",  status: "Résolue",  createdAt: new Date(now - 65 * 60000).toISOString() },
+    { _id: uid("al"), alertType: "Trafic suspect répété",      sourceIP: "185.220.101.44", severity: "Faible", status: "Résolue",  createdAt: new Date(now - 130 * 60000).toISOString() },
+  ];
+}
+
+function genInitialSuricata() {
+  const now = Date.now();
+  const rows = [
+    { sig: "ET SCAN Nmap Scripting Engine User-Agent Detected", sid: 2013028, cat: "Attempted Information Leak", ip: SUSPECT_SRC[1] },
+    { sig: "ET DROP Spamhaus DROP Listed Traffic",             sid: 2400012, cat: "Policy Violation",           ip: "185.220.101.7" },
+    { sig: "ET EXPLOIT Possible ETERNALBLUE Probe MS17-010",    sid: 2024218, cat: "Attempted Exploit",          ip: SUSPECT_SRC[0] },
+    { sig: "ET SCAN Suspicious inbound to mySQL port 3306",     sid: 2010935, cat: "Attempted Reconnaissance",   ip: SUSPECT_SRC[3] },
+    { sig: "ET POLICY SSH client on Non-Standard Port",         sid: 2001219, cat: "Policy Violation",           ip: SUSPECT_SRC[4] },
+  ];
+  return rows.map((r, i) => ({
+    _id: uid("sur"),
+    signatureId: r.sid,
+    signature: r.sig,
+    category: r.cat,
+    sourceIP: r.ip,
+    destinationIP: rPick(DEST_IPS),
+    createdAt: new Date(now - (i * 7 + 2) * 60000).toISOString(),
+  }));
+}
+
+const OPN_STATUS = {
+  connected: true,
+  metadata: { system: { status: "OK", message: "Système à jour — aucune action requise" } },
+  subsystems: {
+    dhcpd:    { title: "Service DHCP",         statusCode: 0 },
+    unbound:  { title: "Résolveur DNS",        statusCode: 0 },
+    suricata: { title: "IDS/IPS Suricata",     statusCode: 0 },
+    openvpn:  { title: "OpenVPN",              statusCode: 1 },
+  },
+};
+
+/* Réponses heuristiques de l'assistant (mode hors-ligne / base de connaissance,
+   même logique de repli que la route /api/assistant/chat côté backend réel) */
+function assistantReply(message) {
+  const m = message.toLowerCase();
+  const has = (...words) => words.some((w) => m.includes(w));
+
+  if (has("scan", "nmap", "port"))
+    return "Un scan de ports (souvent Nmap) sonde plusieurs ports sur une courte fenêtre pour cartographier les services ouverts. Sévérité : Élevée si isolé, Critique si couplé à un débit soutenu. Recommandation : bannir l'IP source sur le firewall et vérifier qu'aucun port sensible (SSH, RDP, SMB) n'est exposé inutilement.";
+  if (has("icmp", "ping flood", "flood icmp"))
+    return "Un flood ICMP correspond à un volume anormal de paquets ping (≥ 8/30s dans nos seuils) depuis une même source — souvent un test de disponibilité ou un déni de service léger. Sévérité : Moyenne. Recommandation : surveiller l'évolution ; bannir seulement si le volume continue d'augmenter.";
+  if (has("tcp flood", "syn flood", "ddos", "déni de service", "dos"))
+    return "Un flood TCP / SYN flood dépasse le seuil de 20 paquets/60s depuis une IP — profil typique d'un scan agressif ou d'un déni de service. Sévérité : Critique. Recommandation : bannir automatiquement l'IP (déjà appliqué par la règle de détection) et vérifier les logs du service ciblé.";
+  if (has("suspect", "suspicious", "répété"))
+    return "Un trafic classé « suspect répété » regroupe des flux non catégorisables par le classifieur heuristique (ports inhabituels, protocole atypique) revenant ≥ 5 fois en 60s. Sévérité : Moyenne. Recommandation : inspecter manuellement les logs bruts de cette IP avant de bannir.";
+  if (has("bannir", "ban ip", "bloquer"))
+    return "Pour bannir une IP : ouvrez la page Alertes ou Firewall puis cliquez sur « Bannir ». Cela pousse une règle de blocage vers OPNsense (dans cette démo, l'action est simulée localement). Le blocage reste actif jusqu'à un débannissement manuel.";
+  if (has("suricata", "signature", "sid", "eve.json"))
+    return "Suricata (IDS/IPS) analyse le trafic miroir et génère des alertes par signature (SID) classées Exploit / Reconnaissance / Policy Violation. La page « Suricata IDS/IPS » les affiche en direct — ces détections sont complémentaires au moteur de seuils interne.";
+  if (has("bonjour", "salut", "hello", "hi"))
+    return "Bonjour 👋 Je peux vous aider à identifier le type d'une attaque détectée (scan, flood, trafic suspect) et vous recommander une action. Décrivez l'alerte ou posez votre question.";
+  if (has("merci"))
+    return "Avec plaisir — n'hésitez pas si une autre alerte vous interpelle.";
+
+  return "Je n'ai pas assez d'éléments pour conclure avec certitude. Pouvez-vous préciser le protocole, l'IP source et le volume de paquets observé sur l'alerte concernée ? Je pourrai alors identifier le type d'attaque le plus probable.";
+}
+
+/* ─── Petit hook utilitaire : délai simulé pour les actions (UX réaliste) ─── */
+const fakeDelay = (ms = 500) => new Promise((res) => setTimeout(res, ms));
+
+/* ─── App ─────────────────────────────────────────────────────────────────── */
+function App() {
+  const [user, setUser]                 = useState(null);
+  const [username, setUsername]         = useState("");
+  const [password, setPassword]         = useState("");
+  const [loginErr, setLoginErr]         = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [activePage, setActivePage]     = useState("dashboard");
+
+  const [logs, setLogs]                 = useState(() => genInitialLogs());
+  const [alerts, setAlerts]             = useState(() => genInitialAlerts());
+  const [bannedIPs, setBannedIPs]       = useState(() => ([
+    { ip: "45.142.212.61", ruleUuid: uid("rule") },
+    { ip: "91.219.236.5",  ruleUuid: uid("rule") },
+  ]));
+  const [opnStatus]                     = useState(OPN_STATUS);
+  const [users, setUsers]               = useState(() => DEMO_ACCOUNTS.map(({ password, ...u }) => u));
+  const [suricataAlerts, setSuricataAlerts] = useState(() => genInitialSuricata());
+  const [loading, setLoading]           = useState(false);
+  const [exporting, setExporting]       = useState(false);
+  const [lastUpdate, setLastUpdate]     = useState(new Date());
+  const [actionLoading, setActionLoading] = useState({});
+
+  const [assistOpen, setAssistOpen]         = useState(false);
+  const [assistMessages, setAssistMessages] = useState([
+    { role: "bot", text: "Bonjour 👋 Je peux identifier le type d'une attaque détectée et vous conseiller une action. Posez-moi une question sur une alerte." },
+  ]);
+  const [assistInput, setAssistInput]   = useState("");
+  const [assistTyping, setAssistTyping] = useState(false);
+
+  const isLoggedIn = !!user;
+  const role       = user?.role;
+  const canManage  = canOperate(role);
+  const admin      = isAdmin(role);
+
+  const logout = useCallback(() => setUser(null), []);
+  const setAction = (k, v) => setActionLoading((p) => ({ ...p, [k]: v }));
+
+  /* ── Simulation "live" : nouveaux logs / alertes toutes les 5s ── */
+  const tick = useCallback(() => {
+    setLogs((prev) => {
+      const next = [...prev];
+      const roll = Math.random();
+      if (roll < 0.72) {
+        next.unshift(makeNormalLog(0));
+      } else if (roll < 0.86) {
+        next.unshift(makeDiagnosticLog(rPick(NORMAL_SRC), 0));
+      } else {
+        const attacker = rPick(SUSPECT_SRC);
+        next.unshift(makeSuspectLog(attacker, 0));
+
+        // ~30% de chance qu'une rafale suspecte déclenche une nouvelle alerte
+        if (Math.random() < 0.55) {
+          const rule = rPick(ALERT_RULES);
+          const newAlert = {
+            _id: uid("al"),
+            alertType: rule.type,
+            sourceIP: attacker,
+            severity: rule.severity,
+            status: "En cours",
+            createdAt: new Date().toISOString(),
+          };
+          setAlerts((prevA) => [newAlert, ...prevA].slice(0, 40));
+
+          // Règle README : TCP Flood/Scan Critique → ban auto OPNsense
+          if (rule.severity === "Critique") {
+            setBannedIPs((prevB) => (prevB.some((b) => b.ip === attacker)
+              ? prevB
+              : [{ ip: attacker, ruleUuid: uid("rule") }, ...prevB]));
+          }
+        }
+      }
+      return next.slice(0, 80);
+    });
+    setLastUpdate(new Date());
+  }, []);
+
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    const iv = setInterval(tick, 5000);
+    return () => clearInterval(iv);
+  }, [isLoggedIn, tick]);
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    await fakeDelay(450);
+    tick();
+    setLoading(false);
+  }, [tick]);
+
+  /* ── Actions ── */
+  const banIP = async (ip) => {
+    if (!ip) return;
+    setAction(ip, true);
+    await fakeDelay(400);
+    setBannedIPs((prev) => (prev.some((b) => b.ip === ip) ? prev : [{ ip, ruleUuid: uid("rule") }, ...prev]));
+    setAction(ip, false);
+  };
+
+  const unbanIP = async (ip) => {
+    setAction(`u-${ip}`, true);
+    await fakeDelay(400);
+    setBannedIPs((prev) => prev.filter((b) => b.ip !== ip));
+    setAction(`u-${ip}`, false);
+  };
+
+  const resolveAlert = async (id) => {
+    setAction(`r-${id}`, true);
+    await fakeDelay(350);
+    setAlerts((prev) => prev.map((a) => (a._id === id ? { ...a, status: "Résolue" } : a)));
+    setAction(`r-${id}`, false);
+  };
+
+  const createUser = async (payload) => {
+    await fakeDelay(400);
+    if (users.some((u) => u.username === payload.username)) {
+      throw new Error("Ce nom d'utilisateur existe déjà.");
+    }
+    setUsers((prev) => [...prev, {
+      _id: uid("user"), username: payload.username, role: payload.role,
+      createdAt: new Date().toISOString(), lastLogin: null,
+    }]);
+  };
+
+  const updateUserRole = async (id, newRole) => {
+    setAction(`role-${id}`, true);
+    await fakeDelay(350);
+    setUsers((prev) => prev.map((u) => (u._id === id ? { ...u, role: newRole } : u)));
+    setAction(`role-${id}`, false);
+  };
+
+  const deleteUser = async (id) => {
+    if (!window.confirm("Supprimer définitivement cet utilisateur ?")) return;
+    setAction(`del-${id}`, true);
+    await fakeDelay(350);
+    setUsers((prev) => prev.filter((u) => u._id !== id));
+    setAction(`del-${id}`, false);
+  };
+
+  const exportExcel = async () => {
+    setExporting(true);
+    try {
+      await fakeDelay(400);
+      const rows = logs.map((l) => ({
+        Protocole:        l.protocol,
+        "IP Source":      l.sourceIP,
+        "IP Destination": l.destinationIP,
+        Action:           l.action,
+        Date:             l.createdAt ? new Date(l.createdAt).toLocaleString("fr-FR") : "",
+      }));
+      const ws = XLSX.utils.json_to_sheet(rows);
+      ws["!cols"] = [{ wch: 10 }, { wch: 16 }, { wch: 16 }, { wch: 10 }, { wch: 20 }];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Historique");
+      XLSX.writeFile(wb, `psrs-historique-demo-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    } catch (err) {
+      alert("Échec de l'export : " + err.message);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const sendAssistMessage = async () => {
+    const text = assistInput.trim();
+    if (!text) return;
+    setAssistMessages((m) => [...m, { role: "user", text }]);
+    setAssistInput("");
+    setAssistTyping(true);
+    await fakeDelay(700 + rInt(0, 500));
+    setAssistMessages((m) => [...m, { role: "bot", text: assistantReply(text) }]);
+    setAssistTyping(false);
+  };
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoginErr("");
+    setLoginLoading(true);
+    await fakeDelay(500);
+    const found = DEMO_ACCOUNTS.find((a) => a.username === username && a.password === password);
+    if (!found) {
+      setLoginErr("Identifiants incorrects. Utilisez l'un des comptes de démonstration ci-dessous.");
+      setLoginLoading(false);
+      return;
+    }
+    const { password: _pw, ...safeUser } = found;
+    setUser(safeUser);
+    setPassword("");
+    setLoginLoading(false);
+  };
+
+  const fillDemo = (acc) => {
+    setUsername(acc.username);
+    setPassword(acc.password);
+    setLoginErr("");
+  };
+
+  const activeAlerts = alerts.filter((a) => a.status === "En cours");
+  const criticals     = alerts.filter((a) => a.severity === "Critique" && a.status === "En cours").length;
+  const denyLogs      = logs.filter((l) => l.action === "DENY");
+
+  const protocolData = (() => {
+    const colors = { TCP: "#e01e26", UDP: "#16a34a", ICMP: "#7e22ce" };
+    const map = {};
+    logs.forEach((l) => { map[l.protocol] = (map[l.protocol] || 0) + 1; });
+    return Object.entries(map).map(([k, v]) => ({ label: k, value: v, color: colors[k] || "#6b7290" }));
+  })();
+
+  const topIPsData = (() => {
+    const map = {};
+    logs.forEach((l) => { map[l.sourceIP] = (map[l.sourceIP] || 0) + 1; });
+    return Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => ({ label: k, value: v }));
+  })();
+
+  const severityData = (() => {
+    const colors = { Critique: "#dc2626", "Élevée": "#ea580c", Moyenne: "#ca8a04", Faible: "#16a34a" };
+    const map = {};
+    alerts.forEach((a) => { map[a.severity] = (map[a.severity] || 0) + 1; });
+    return Object.entries(map).map(([k, v]) => ({ label: k, value: v, color: colors[k] || "#6b7290" }));
+  })();
+
+  const trafficStats = (() => {
+    const map = {};
+    logs.forEach((l) => {
+      const c = l.trafficCategory || "other";
+      map[c] = (map[c] || 0) + 1;
+    });
+    const total = logs.length || 1;
+    const breakdown = Object.entries(map)
+      .map(([category, count]) => ({ category, count, percent: Math.round((count / total) * 100), color: TRAFFIC_COLORS[category] || TRAFFIC_COLORS.other }))
+      .sort((a, b) => b.count - a.count);
+    return { total: logs.length, breakdown };
+  })();
+
+  /* ── Login page ── */
+  if (!isLoggedIn) return (
+    <div id="psrs-root">
+      <style>{CSS}</style>
+      <div className="login-page">
+        <div className="login-wrap">
+          <div className="hero" style={{ borderRadius: 14, width: "100%", padding: "26px 28px" }}>
+            <div className="hero-glow" />
+            <div className="hero-icon" style={{ position: "relative", zIndex: 1 }}>
+              <PSRSMark size={26} />
+            </div>
+            <div style={{ position: "relative", zIndex: 1 }}>
+              <div className="hero-name">PSRS</div>
+              <div className="hero-tag">Plateforme de Supervision Réseau &amp; Sécurité</div>
+              <div className="hero-badge"><Icon d={Icons.sparkle} size={11} strokeWidth={2} stroke="#fff" />Détection des menaces pilotée par l'IA</div>
+              <div className="hero-term"><span>&gt; scan_reseau --status</span></div>
+            </div>
+          </div>
+          <div className="login-card">
+            {loginErr && (
+              <div className="login-err">
+                <Icon d={Icons.alert} size={14} strokeWidth={2} />
+                {loginErr}
+              </div>
+            )}
+            <form onSubmit={handleLogin}>
+              <div className="field">
+                <label>Identifiant</label>
+                <input placeholder="Nom d'utilisateur" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" disabled={loginLoading} />
+              </div>
+              <div className="field">
+                <label>Mot de passe</label>
+                <input type="password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" disabled={loginLoading} />
+              </div>
+              <button type="submit" className="btn btn-primary" style={{ width: "100%", justifyContent: "center", padding: "10px", marginTop: 6, fontSize: 13 }} disabled={loginLoading}>
+                {loginLoading ? "Connexion…" : "Connexion"}
+              </button>
+            </form>
+          </div>
+
+          <div className="demo-box">
+            <div><Icon d={Icons.info} size={12} strokeWidth={2} style={{ verticalAlign: "-2px", marginRight: 5 }} /><b>Démo hors-ligne</b> — aucune donnée réelle, tout est simulé localement. Cliquez sur un compte pour le remplir :</div>
+            {DEMO_ACCOUNTS.map((a) => (
+              <div key={a.username} className="demo-cred" onClick={() => fillDemo(a)}>
+                <span>{a.username} / {a.password}</span>
+                <span style={{ color: "var(--muted)" }}>{ROLE_LABELS[a.role]}</span>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ fontSize: 11, color: "var(--muted)" }}>PSRS · SOC Platform v2.0 · Démo</div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const pages = [
+    { id: "dashboard", icon: Icons.dashboard, label: "Dashboard" },
+    { id: "alerts",    icon: Icons.alert,     label: "Alertes",    badge: activeAlerts.length },
+    { id: "logs",      icon: Icons.logs,      label: "Logs réseau" },
+    { id: "firewall",  icon: Icons.firewall,  label: "Firewall",   badge: bannedIPs.length },
+    { id: "suricata",  icon: Icons.suricata,  label: "Suricata IDS/IPS" },
+    { id: "stats",     icon: Icons.stats,     label: "Statistiques" },
+    ...(admin ? [{ id: "users", icon: Icons.users, label: "Utilisateurs" }] : []),
+  ];
+
+  const pageTitles = { dashboard: "Vue d'ensemble", alerts: "Centre des Alertes", logs: "Logs Réseau", firewall: "Firewall", suricata: "Suricata IDS/IPS", stats: "Statistiques", users: "Gestion des Utilisateurs" };
+
+  return (
+    <div id="psrs-root">
+      <style>{CSS}</style>
+
+      <div className="demo-banner">
+        <Icon d={Icons.info} size={13} strokeWidth={2} />
+        <span><b>Mode démonstration</b> — données générées et simulées localement dans votre navigateur, aucun serveur ni base de données réels ne sont utilisés.</span>
+      </div>
+
+      <div className="hero">
+        <div className="hero-glow" />
+        <div className="hero-icon" style={{ position: "relative", zIndex: 1 }}>
+          <PSRSMark size={26} />
+        </div>
+        <div style={{ position: "relative", zIndex: 1 }}>
+          <div className="hero-name">PSRS</div>
+          <div className="hero-tag">Plateforme de Supervision Réseau &amp; Sécurité</div>
+          <div className="hero-badge"><Icon d={Icons.sparkle} size={11} strokeWidth={2} stroke="#fff" />Détection des menaces pilotée par l'IA</div>
+        </div>
+      </div>
+
+      <div className="app">
+
+        <aside className="sidebar">
+          <div className="logo">
+            <div className="logo-icon"><PSRSMark size={20} /></div>
+            <div>
+              <div className="logo-name">PSRS</div>
+              <div className="logo-sub">Supervision Réseau &amp; Sécurité</div>
+            </div>
+          </div>
+
+          <div className="nav-section">Navigation</div>
+          {pages.map(({ id, icon, label, badge }) => (
+            <button key={id} className={`nav-btn ${activePage === id ? "active" : ""}`} onClick={() => setActivePage(id)}>
+              <Icon d={icon} size={15} strokeWidth={1.8} />
+              {label}
+              {badge > 0 && <span className="nav-badge">{badge > 99 ? "99+" : badge}</span>}
+            </button>
+          ))}
+
+          <div className="live-pill">
+            <div className="live-dot" />
+            Live · 5s (simulé)
+          </div>
+
+          <div className="user-box">
+            <div className="user-name">{user.username}</div>
+            <span className={`role-badge role-${role}`}>{ROLE_LABELS[role] || role}</span>
+            <button className="logout-btn" onClick={logout}>
+              <Icon d={Icons.logout} size={14} strokeWidth={1.8} />
+              Déconnexion
+            </button>
+          </div>
+        </aside>
+
+        <main className="main">
+          <div className="page-header">
+            <div>
+              <div className="page-title">{pageTitles[activePage]}</div>
+              <div className="page-sub">{lastUpdate ? `Mis à jour il y a ${timeAgo(lastUpdate)}` : "Chargement…"}</div>
+            </div>
+            <button className="btn btn-ghost btn-sm" onClick={fetchData} disabled={loading}>
+              <span className={loading ? "spin" : ""}><Icon d={Icons.refresh} size={12} strokeWidth={2} /></span>
+              Actualiser
+            </button>
+          </div>
+
+          {/* ── DASHBOARD ── */}
+          {activePage === "dashboard" && (
+            <div className="fade-in">
+              <div className="cards stagger">
+                {[
+                  { label: "Logs réseau",     value: logs.length,          color: "#e01e26", foot: "paquets capturés" },
+                  { label: "Alertes actives", value: activeAlerts.length,  color: "#dc2626", foot: `${criticals} critiques` },
+                  { label: "Paquets refusés", value: denyLogs.length,      color: "#ea580c", foot: "action DENY" },
+                  { label: "IPs bloquées",    value: bannedIPs.length,     color: "#a1a1aa", foot: "règles actives" },
+                ].map(({ label, value, color, foot }) => (
+                  <div className="card" key={label}>
+                    <div className="card-label">{label}</div>
+                    <div className="card-val" style={{ color }}>{value}</div>
+                    <div className="card-foot">{foot}</div>
+                    <div className="card-line" style={{ background: color, opacity: .2 }} />
+                  </div>
+                ))}
+              </div>
+
+              <div className="panel fade-up">
+                <div className="panel-header">
+                  <span className="panel-title" style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                    <Icon d={Icons.server} size={14} />
+                    Statut OPNsense
+                  </span>
+                  <span className={`chip ${opnStatus?.connected ? "chip-ok" : "chip-err"}`}>
+                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: "currentColor", display: "inline-block", animation: opnStatus?.connected ? "pulse 1.8s ease infinite" : "none" }} />
+                    {opnStatus?.connected ? "Connecté" : "Non connecté"}
+                  </span>
+                </div>
+                <div className="panel-body">
+                  {opnStatus?.connected ? (
+                    <div className="opn-grid">
+                      {[
+                        { k: "Statut système",  v: opnStatus.metadata?.system?.status || "OK",      ok: true },
+                        { k: "Message",         v: opnStatus.metadata?.system?.message || "—",      ok: null },
+                        ...Object.entries(opnStatus.subsystems || {}).slice(0, 4).map(([k, v]) => ({
+                          k: v.title || k,
+                          v: v.statusCode === 0 ? "OK" : `Code ${v.statusCode}`,
+                          ok: v.statusCode === 0,
+                        })),
+                      ].map(({ k, v, ok }, i) => (
+                        <div className="opn-item" key={i}>
+                          <div className="opn-key">{k}</div>
+                          <div className="opn-val" style={{ color: ok === true ? "var(--ok)" : ok === false ? "var(--danger)" : "var(--text)" }}>{v}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="empty">
+                      <div className="empty-icon"><Icon d={Icons.server} size={32} strokeWidth={1} /></div>
+                      <div className="empty-text">OPNsense inaccessible — vérifiez la connexion API</div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="panel fade-up">
+                <div className="panel-header">
+                  <span className="panel-title" style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                    <Icon d={Icons.sparkle} size={14} />
+                    Répartition du trafic par type (IA)
+                  </span>
+                  <span className="chip chip-blue">
+                    {trafficStats ? `${trafficStats.total} flux · 24h` : "…"}
+                  </span>
+                </div>
+                <div className="panel-body">
+                  {!trafficStats || trafficStats.breakdown.length === 0 ? (
+                    <div className="empty">
+                      <div className="empty-icon"><Icon d={Icons.sparkle} size={32} strokeWidth={1} /></div>
+                      <div className="empty-text">Pas encore assez de trafic classifié</div>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      {trafficStats.breakdown.map((b) => (
+                        <div key={b.category}>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 4 }}>
+                            <span style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600 }}>
+                              <span style={{ width: 7, height: 7, borderRadius: "50%", background: b.color }} />
+                              {TRAFFIC_LABELS[b.category] || b.category}
+                            </span>
+                            <span style={{ color: "var(--muted)" }}>{b.count} · {b.percent}%</span>
+                          </div>
+                          <div style={{ height: 6, borderRadius: 99, background: "var(--surface2)", overflow: "hidden" }}>
+                            <div style={{ height: "100%", width: `${b.percent}%`, background: b.color, borderRadius: 99, transition: "width .4s ease" }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {activeAlerts.length > 0 && (
+                <div className="panel fade-up">
+                  <div className="panel-header">
+                    <span className="panel-title">Alertes récentes</span>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setActivePage("alerts")}>Voir tout</button>
+                  </div>
+                  {activeAlerts.slice(0, 5).map((a, i) => (
+                    <AlertRow key={a._id} alert={a} onBan={banIP} onResolve={resolveAlert} actionLoading={actionLoading} canManage={canManage} compact delay={i * 0.05} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── ALERTS ── */}
+          {activePage === "alerts" && (
+            <div className="fade-in">
+              <div className="panel">
+                <div className="panel-header">
+                  <span className="panel-title">Toutes les alertes ({alerts.length})</span>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {criticals > 0 && <span className="chip chip-err">{criticals} critique{criticals > 1 ? "s" : ""}</span>}
+                  </div>
+                </div>
+                {alerts.length === 0 ? (
+                  <div className="empty">
+                    <div className="empty-icon"><Icon d={Icons.alert} size={32} strokeWidth={1} /></div>
+                    <div className="empty-text">Aucune alerte détectée</div>
+                  </div>
+                ) : alerts.map((a, i) => (
+                  <AlertRow key={a._id} alert={a} onBan={banIP} onResolve={resolveAlert} actionLoading={actionLoading} canManage={canManage} delay={i * 0.03} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── LOGS ── */}
+          {activePage === "logs" && (
+            <div className="fade-in">
+              <div className="panel">
+                <div className="panel-header">
+                  <span className="panel-title">Logs réseau ({logs.length})</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <button className="btn btn-excel btn-sm" onClick={exportExcel} disabled={exporting}>
+                      <Icon d={Icons.download} size={11} strokeWidth={2} />
+                      {exporting ? "Export…" : "Exporter l'historique (.xlsx)"}
+                    </button>
+                    <span className="chip chip-blue">
+                      <Icon d={Icons.activity} size={10} strokeWidth={2} />
+                      Sniffer · live (simulé)
+                    </span>
+                  </div>
+                </div>
+                {logs.length === 0 ? (
+                  <div className="empty">
+                    <div className="empty-icon"><Icon d={Icons.logs} size={32} strokeWidth={1} /></div>
+                    <div className="empty-text">Aucun log reçu — sniffer en attente</div>
+                  </div>
+                ) : (
+                  <div style={{ overflowX: "auto" }}>
+                    <table className="tbl">
+                      <thead>
+                        <tr>
+                          <th>Protocole</th><th>Type de trafic (IA)</th><th>IP Source</th><th>IP Destination</th><th>Action</th><th>Heure</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {logs.map((l) => (
+                          <tr key={l._id}>
+                            <td><span className={`proto p-${l.protocol || "x"}`}>{l.protocol || "?"}</span></td>
+                            <td><TrafficBadge log={l} /></td>
+                            <td>{l.sourceIP}</td>
+                            <td>{l.destinationIP}</td>
+                            <td><span className={l.action === "DENY" ? "act-deny" : "act-allow"}>{l.action}</span></td>
+                            <td style={{ color: "var(--muted)" }}>{new Date(l.createdAt).toLocaleTimeString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── FIREWALL ── */}
+          {activePage === "firewall" && (
+            <div className="fade-in">
+              <div className="panel">
+                <div className="panel-header">
+                  <span className="panel-title">IPs bloquées sur OPNsense ({bannedIPs.length})</span>
+                  <span className="chip chip-warn">Règles actives firewall</span>
+                </div>
+                {bannedIPs.length === 0 ? (
+                  <div className="empty">
+                    <div className="empty-icon"><Icon d={Icons.lock} size={32} strokeWidth={1} /></div>
+                    <div className="empty-text">Aucune IP bloquée actuellement</div>
+                  </div>
+                ) : bannedIPs.map((entry, i) => {
+                  const ip   = typeof entry === "string" ? entry : entry.ip;
+                  const uuid_ = entry.ruleUuid;
+                  return (
+                    <div className="fw-row" key={ip} style={{ animationDelay: `${i * 0.04}s` }}>
+                      <div>
+                        <div className="fw-ip">{ip}</div>
+                        {uuid_ && <div className="fw-uuid">UUID: {uuid_.slice(0, 18)}…</div>}
+                      </div>
+                      {canManage ? (
+                        <button className="btn btn-ghost btn-sm" onClick={() => unbanIP(ip)} disabled={actionLoading[`u-${ip}`]}>
+                          {actionLoading[`u-${ip}`] ? "…" : <><Icon d={Icons.unlock} size={11} strokeWidth={2} /> Débloquer</>}
+                        </button>
+                      ) : (
+                        <span className="chip chip-neu">Lecture seule</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* ── SURICATA IDS/IPS ── */}
+          {activePage === "suricata" && (
+            <div className="fade-in">
+              <div className="panel">
+                <div className="panel-header">
+                  <span className="panel-title">Détections par signature ({suricataAlerts.length})</span>
+                  <span className="chip chip-warn">
+                    <Icon d={Icons.suricata} size={10} strokeWidth={2} />
+                    IDS/IPS
+                  </span>
+                </div>
+                {suricataAlerts.length === 0 ? (
+                  <div className="empty">
+                    <div className="empty-icon"><Icon d={Icons.suricata} size={32} strokeWidth={1} /></div>
+                    <div className="empty-text">Aucune alerte Suricata pour le moment</div>
+                  </div>
+                ) : (
+                  suricataAlerts.map((s, i) => {
+                    const catClass = /exploit/i.test(s.category) ? "cat-exploit" : /polic/i.test(s.category) ? "cat-policy" : "cat-recon";
+                    return (
+                      <div className="sig-row" key={s._id} style={{ animationDelay: `${i * 0.02}s` }}>
+                        <span className="sig-id">{s.signatureId ? `SID ${s.signatureId}` : "SID —"}</span>
+                        <div className="sig-info">
+                          <div className="sig-name">{s.signature}</div>
+                          <div className="sig-meta">{s.sourceIP} → {s.destinationIP} · {timeAgo(s.createdAt)}</div>
+                        </div>
+                        <span className={`sig-cat ${catClass}`}>{s.category}</span>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── USERS (admin) ── */}
+          {activePage === "users" && admin && (
+            <div className="fade-in">
+              <UsersPage
+                users={users}
+                currentUserId={user.id}
+                onCreate={createUser}
+                onUpdateRole={updateUserRole}
+                onDelete={deleteUser}
+                actionLoading={actionLoading}
+              />
+            </div>
+          )}
+
+          {/* ── STATISTICS ── */}
+          {activePage === "stats" && (
+            <div className="fade-in">
+              <div className="stats-grid stagger">
+                <div className="panel">
+                  <div className="panel-header">
+                    <span className="panel-title">Protocoles réseau</span>
+                    <span className="chip chip-neu">{logs.length} paquets</span>
+                  </div>
+                  <div className="panel-body">
+                    {protocolData.length === 0 ? (
+                      <div className="empty"><div className="empty-text">Aucune donnée</div></div>
+                    ) : <DonutChart data={protocolData} />}
+                  </div>
+                </div>
+
+                <div className="panel">
+                  <div className="panel-header">
+                    <span className="panel-title">Alertes par sévérité</span>
+                    <span className="chip chip-neu">{alerts.length} total</span>
+                  </div>
+                  <div className="panel-body">
+                    {severityData.length === 0 ? (
+                      <div className="empty"><div className="empty-text">Aucune alerte</div></div>
+                    ) : <DonutChart data={severityData} />}
+                  </div>
+                </div>
+
+                <div className="panel">
+                  <div className="panel-header">
+                    <span className="panel-title">Top IPs sources</span>
+                    <span className="chip chip-neu">par volume</span>
+                  </div>
+                  <div className="panel-body">
+                    {topIPsData.length === 0 ? (
+                      <div className="empty"><div className="empty-text">Aucune donnée</div></div>
+                    ) : <BarChart data={topIPsData} color="#e01e26" />}
+                  </div>
+                </div>
+
+                <div className="panel">
+                  <div className="panel-header">
+                    <span className="panel-title">Timeline des alertes</span>
+                    <span className="chip chip-neu">20 dernières</span>
+                  </div>
+                  <div className="panel-body" style={{ padding: "0 18px" }}>
+                    {alerts.length === 0 ? (
+                      <div className="empty"><div className="empty-text">Aucune alerte</div></div>
+                    ) : (
+                      <div className="timeline">
+                        {alerts.slice(0, 20).map((a, i) => (
+                          <div className="tl-item" key={a._id} style={{ animationDelay: `${i * 0.03}s` }}>
+                            <div className="tl-dot" style={{ background: severityColor(a.severity) }} />
+                            <div className="tl-info">
+                              <div className="tl-type">{a.alertType}</div>
+                              <div className="tl-meta">{a.sourceIP} · {a.severity}</div>
+                            </div>
+                            <div className="tl-time">{timeAgo(a.createdAt)}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="cards stagger">
+                {[
+                  { label: "Total logs",        value: logs.length,          color: "#e01e26" },
+                  { label: "Alertes en cours",  value: activeAlerts.length,  color: "#dc2626" },
+                  { label: "Alertes résolues",  value: alerts.filter((a) => a.status === "Résolue").length, color: "#16a34a" },
+                  { label: "IPs bloquées",      value: bannedIPs.length,     color: "#a1a1aa" },
+                ].map(({ label, value, color }) => (
+                  <div className="card" key={label}>
+                    <div className="card-label">{label}</div>
+                    <div className="card-val" style={{ color }}>{value}</div>
+                    <div className="card-line" style={{ background: color, opacity: .2 }} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </main>
+      </div>
+
+      {/* ── Assistant IA ── */}
+      {assistOpen && (
+        <div className="assist-panel">
+          <div className="assist-head">
+            <div className="assist-head-icon"><PSRSMark size={16} /></div>
+            <div>
+              <div className="assist-title">Assistant IA PSRS</div>
+              <div className="assist-sub"><span className="assist-online" />En ligne · Démo (base de connaissance locale)</div>
+            </div>
+            <button className="assist-close" onClick={() => setAssistOpen(false)}>
+              <Icon d={Icons.x} size={14} strokeWidth={2} />
+            </button>
+          </div>
+          <div className="assist-body">
+            {assistMessages.map((m, i) => (
+              <div key={i} className={`msg ${m.role === "bot" ? "msg-bot" : "msg-user"}`}>
+                {m.text.split("\n").map((line, j) => <div key={j}>{line || "\u00A0"}</div>)}
+              </div>
+            ))}
+            {assistTyping && (
+              <div className="typing"><span /><span /><span /></div>
+            )}
+          </div>
+          <form
+            className="assist-input"
+            onSubmit={(e) => { e.preventDefault(); sendAssistMessage(); }}
+          >
+            <input
+              type="text"
+              placeholder="Décrivez le problème ou l'alerte…"
+              value={assistInput}
+              onChange={(e) => setAssistInput(e.target.value)}
+            />
+            <button type="submit" className="assist-send" disabled={assistTyping}>
+              <Icon d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" size={14} strokeWidth={2} />
+            </button>
+          </form>
+        </div>
+      )}
+      <button className="assist-btn" onClick={() => setAssistOpen((o) => !o)} title="Assistant IA PSRS">
+        {assistOpen
+          ? <Icon d="M18 6L6 18M6 6l12 12" size={22} strokeWidth={2.2} stroke="#fff" />
+          : <Icon d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z" size={22} strokeWidth={2} stroke="#fff" />
+        }
+      </button>
+    </div>
+  );
+}
+
+/* ─── AlertRow ────────────────────────────────────────────────────────────── */
+function AlertRow({ alert: a, onBan, onResolve, actionLoading, compact, canManage = true, delay = 0 }) {
+  return (
+    <div className="alert-row" style={{ animationDelay: `${delay}s` }}>
+      <div className="alert-bar" style={{ background: severityColor(a.severity) }} />
+      <div className="alert-info">
+        <div className="alert-type">{a.alertType}</div>
+        <div className="alert-meta">{a.sourceIP} · {a.severity} · {timeAgo(a.createdAt)} · {a.status}</div>
+      </div>
+      {!compact && a.status === "En cours" && (
+        canManage ? (
+          <div className="alert-acts">
+            <button className="btn btn-danger btn-sm" onClick={() => onBan(a.sourceIP)} disabled={actionLoading[a.sourceIP]}>
+              {actionLoading[a.sourceIP] ? "…" : <><Icon d={Icons.ban} size={11} strokeWidth={2} />Bannir</>}
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={() => onResolve(a._id)} disabled={actionLoading[`r-${a._id}`]}>
+              {actionLoading[`r-${a._id}`] ? "…" : <><Icon d={Icons.check} size={11} strokeWidth={2} />Résoudre</>}
+            </button>
+          </div>
+        ) : (
+          <span className="chip chip-neu">Lecture seule</span>
+        )
+      )}
+    </div>
+  );
+}
+
+/* ─── UsersPage (admin) ───────────────────────────────────────────────────── */
+function UsersPage({ users, currentUserId, onCreate, onUpdateRole, onDelete, actionLoading }) {
+  const [form, setForm] = useState({ username: "", password: "", role: "viewer" });
+  const [err, setErr]   = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setErr("");
+    if (!form.username.trim() || form.password.length < 6) {
+      setErr("Identifiant requis, mot de passe d'au moins 6 caractères.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await onCreate(form);
+      setForm({ username: "", password: "", role: "viewer" });
+    } catch (e2) {
+      setErr(e2.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="panel">
+      <div className="panel-header">
+        <span className="panel-title">Utilisateurs ({users.length})</span>
+        <span className="chip chip-blue">Admin · Operator · Viewer</span>
+      </div>
+
+      <form className="user-form" onSubmit={submit}>
+        <div className="field">
+          <label>Identifiant</label>
+          <input placeholder="nom.utilisateur" value={form.username}
+            onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))} disabled={busy} />
+        </div>
+        <div className="field">
+          <label>Mot de passe</label>
+          <input type="password" placeholder="•••••••• (min. 6)" value={form.password}
+            onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} disabled={busy} />
+        </div>
+        <div className="field">
+          <label>Rôle</label>
+          <select className="role-select" value={form.role}
+            onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))} disabled={busy}>
+            <option value="viewer">Viewer</option>
+            <option value="operator">Operator</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <button type="submit" className="btn btn-primary btn-sm" disabled={busy}>
+          <Icon d={Icons.plus} size={12} strokeWidth={2} />
+          {busy ? "Création…" : "Créer"}
+        </button>
+      </form>
+      {err && (
+        <div style={{ margin: "0 18px 12px" }} className="login-err">
+          <Icon d={Icons.alert} size={13} strokeWidth={2} />{err}
+        </div>
+      )}
+
+      {users.length === 0 ? (
+        <div className="empty">
+          <div className="empty-icon"><Icon d={Icons.users} size={32} strokeWidth={1} /></div>
+          <div className="empty-text">Aucun utilisateur pour le moment</div>
+        </div>
+      ) : users.map((u, i) => (
+        <div className="user-row" key={u._id} style={{ animationDelay: `${i * 0.03}s` }}>
+          <div className="user-row-info">
+            <div className="user-row-name">{u.username}</div>
+            <div className="user-row-meta">
+              Créé le {new Date(u.createdAt).toLocaleDateString()}
+              {u.lastLogin ? ` · dernière connexion ${timeAgo(u.lastLogin)}` : " · jamais connecté"}
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <select
+              className="role-select"
+              value={u.role}
+              disabled={u._id === currentUserId || actionLoading[`role-${u._id}`]}
+              onChange={(e) => onUpdateRole(u._id, e.target.value)}
+            >
+              <option value="viewer">Viewer</option>
+              <option value="operator">Operator</option>
+              <option value="admin">Admin</option>
+            </select>
+            <button
+              className="btn btn-danger btn-sm"
+              disabled={u._id === currentUserId || actionLoading[`del-${u._id}`]}
+              onClick={() => onDelete(u._id)}
+              title={u._id === currentUserId ? "Vous ne pouvez pas supprimer votre propre compte" : "Supprimer"}
+            >
+              <Icon d={Icons.trash} size={12} strokeWidth={2} />
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>
